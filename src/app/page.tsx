@@ -14,11 +14,19 @@ import {
 } from "@project-serum/anchor";
 import { PublicKey } from "@solana/web3.js";
 import idl from "../idl.json";
-import { Anchor, LoaderCircleIcon } from "lucide-react";
+import { ClipboardCheck, Edit, LoaderCircleIcon, Trash2 } from "lucide-react";
 import dynamic from "next/dynamic";
-import AddTodoForm from "@/components/AddTodoForm";
-import TodoList from "@/components/TodoList";
 import BN from "bn.js";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { Textarea } from "@/components/ui/textarea";
+import {
+  Dialog,
+  DialogContent,
+  DialogHeader,
+  DialogTitle,
+  DialogFooter,
+} from "@/components/ui/dialog";
 
 // Good Practice: store the program ID in a constant
 const programID = new PublicKey("7cpyWot5Ngskx5Ut9a16YL85VYZjf5Ea2SZ8Nf5aUK8i");
@@ -33,15 +41,21 @@ const WalletMultiButtonDynamic = dynamic(
 export default function Home() {
   const IDL = JSON.parse(JSON.stringify(idl));
   const [todos, setTodos] = useState<ProgramAccount[]>([]);
-  const [input, setInput] = useState("");
   const [program, setProgram] = useState<Program<Idl>>();
   const [todoPDA, setTodoPDA] = useState<PublicKey>();
   const [isTodoInitialized, setIsTodoInitialized] = useState(false);
   const [isAddLoading, setIsAddLoading] = useState(false);
-  const todo_id = 1;
-  const todoIdBN = new BN(todo_id);
-
+  const [title, setTitle] = useState("");
+  const [description, setDescription] = useState("");
+  const [endDate, setEndDate] = useState("");
+  let todo_id = 1;
+  let todoIdBN = new BN(todo_id);
+  const [isLoading, setIsLoading] = useState(false);
   const wallet = useAnchorWallet();
+  const [editingTodo, setEditingTodo] = useState<Todo | null>(null);
+  console.log("🚀 ~ Home ~ editingTodo:", editingTodo);
+  const [editIndex, setEditIndex] = useState<number | null>(null);
+
   const { publicKey, connected } = useWallet();
   const { connection } = useConnection();
   //   const [isTodoListLoading, setIsTodoListLoading] = useState(false);
@@ -51,18 +65,24 @@ export default function Home() {
   //     publickey: PublicKey | null;
   //   }>();
 
+  const dateFormatter = new Intl.DateTimeFormat("en-GB", {
+    day: "2-digit",
+    month: "2-digit",
+    year: "numeric",
+  });
+
   const initialize_todo_list = async () => {
     if (!program || !publicKey) return;
     if (isTodoInitialized) return;
-
     try {
-      const [todoPDA] = await PublicKey.findProgramAddressSync(
+      const [todoPDA] = PublicKey.findProgramAddressSync(
         [todoIdBN.toArrayLike(Buffer, "le", 8), publicKey.toBuffer()],
         program.programId
       );
       setTodoPDA(todoPDA);
       try {
         const todos = await program.account.todoList.fetch(todoPDA);
+        setTodos(todos || []);
         console.log("🚀 ~ constinitialize_todo_list= ~ todos:", todos);
         setIsTodoInitialized(true);
       } catch (error) {
@@ -92,154 +112,119 @@ export default function Home() {
     }
   };
 
-  //   const fetchTodos = async () => {
-  //     if (!program || !publicKey || !todoPDA) return;
-  //     // setIsTodoListLoading(true);
-  //     try {
-  //       const todos = await program.account.TodoList.fetch(todoPDA);
+  const fetchTodos = async () => {
+    if (!program || !publicKey || !todoPDA) return;
+    try {
+      const todos = await program.account.todoList.fetch(todoPDA);
+      setTodos(todos);
+    } catch (err) {
+      console.error("Error fetching todos:", err);
+    } finally {
+      // setIsTodoListLoading(false);
+    }
+  };
 
-  //       console.log("🚀 ~ fetchTodos ~ todos:", todos);
-  //       setTodos(todos);
-  //     } catch (err) {
-  //       console.error("Error fetching todos:", err);
-  //     } finally {
-  //       //   setIsTodoListLoading(false);
-  //     }
-  //   };
-
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const addTodo = async (e: any) => {
-    e.preventDefault();
-    console.log("Adding todo with state:", {
-      program: !!program,
-      publicKey: !!publicKey,
-      input,
-      userState: userState?.toString(),
-    });
-
-    if (!program || !publicKey || !input || !userState) {
-      console.log("Missing required state:", {
-        program: !!program,
-        publicKey: !!publicKey,
-        input: !!input,
-        userState: !!userState,
-      });
+  const handleDelete = async () => {
+    if (!program || !publicKey || !todoPDA) {
+      console.log("Missing required state");
       return;
     }
+    setIsLoading(true);
 
     try {
-      setIsAddLoading(true);
-
-      const userStateAccount = await program.account.userState.fetch(userState);
-      console.log("User state account:", userStateAccount);
-      const todoCount = userStateAccount.todoCount;
-      // Todo : check later
-      // # SOLDEVS
-
-      // | Aspect         | Using PDAs                          | Without PDAs                               |
-      // |----------------|-------------------------------------|--------------------------------------------|
-      // | Uniqueness     | Guaranteed by PDA derivation        | Requires manual logic to ensure uniqueness |
-      // | Security       | PDAs are owned by the program       | Accounts may be owned by users, increasing risk |
-      // | Scalability    | Each Todo is a separate account, scalable | Limited by account size or manual management |
-      // | Ease of Lookup | Easy to calculate addresses using seeds | Requires additional logic to find accounts |
-      // | Complexity     | Simple and idiomatic in Anchor      | More complex and error-prone               |
-
-      // little-endian => least significant byte is stored first
-      const [todoPDA] = await PublicKey.findProgramAddressSync(
-        [
-          Buffer.from("todo"),
-          userState.toBuffer(),
-          new Uint8Array(todoCount.toArrayLike(Buffer, "le", 8)),
-        ],
-        program.programId
-      );
-
-      // # SOLDEVS
-      // yes
-      // authority => auth // The field name can be anything valid in Rust
-
-      // console.log("Todo PDA:", todoPDA.toString());
-
       const txHash = await program.methods
-        .addTodo(input)
+        .deleteTodo(todoIdBN)
         .accounts({
-          todo: todoPDA,
-          userState: userState,
-          user: publicKey,
-          authority: publicKey,
+          signer: publicKey,
+          todoList: todoPDA,
           systemProgram: web3.SystemProgram.programId,
         })
         .rpc();
-      // 'processed': Query the most recent block which has reached 1 confirmation by the connected node
-      // 'confirmed': Query the most recent block which has reached 1 confirmation by the cluster
-      // 'finalized': Query the most recent block which has been finalized by the cluster
+
       const latestBlockhash = await connection.getLatestBlockhash();
       await connection.confirmTransaction(
         {
           signature: txHash,
           ...latestBlockhash,
         },
-        "finalized"
+        "confirmed"
       );
-      setInput("");
+      todo_id++;
+      todoIdBN = new BN(todo_id);
+      setTodos([]);
+      setIsTodoInitialized(false);
+    } catch (err) {
+      console.error("Error adding todo:", err);
+    } finally {
+      setIsAddLoading(false);
+      setEditingTodo(null);
+      setEditIndex(null);
+    }
+  };
+
+  const handleFinished = async (index: number) => {
+    if (!program || !publicKey || !todoPDA) {
+      console.log("Missing required state");
+      return;
+    }
+    setIsLoading(true);
+
+    try {
+      const txHash = await program.methods
+        .finishTodo(todoIdBN, new BN(index))
+        .accounts({
+          signer: publicKey,
+          todoList: todoPDA,
+          systemProgram: web3.SystemProgram.programId,
+        })
+        .rpc();
+
+      const latestBlockhash = await connection.getLatestBlockhash();
+      await connection.confirmTransaction(
+        {
+          signature: txHash,
+          ...latestBlockhash,
+        },
+        "confirmed"
+      );
       fetchTodos();
     } catch (err) {
       console.error("Error adding todo:", err);
     } finally {
       setIsAddLoading(false);
-    }
-  };
-  const toggleTodo = async (todoPublicKey: web3.PublicKey) => {
-    if (!program || !publicKey) return;
-
-    try {
-      setLoadingState({
-        isToogleLoading: true,
-        isDeleteLoading: false,
-        publickey: todoPublicKey,
-      });
-      const txHash = await program.methods
-        .toggleCompleted()
-        .accounts({
-          todo: todoPublicKey,
-          authority: publicKey,
-        })
-        .rpc();
-      const latestBlockhash = await connection.getLatestBlockhash();
-      await connection.confirmTransaction(
-        {
-          signature: txHash,
-          ...latestBlockhash,
-        },
-        "finalized"
-      );
-
-      fetchTodos();
-    } catch (err) {
-      console.error("Error toggling todo:", err);
-    } finally {
-      setLoadingState({
-        isToogleLoading: false,
-        isDeleteLoading: false,
-        publickey: null,
-      });
+      setEditingTodo(null);
+      setEditIndex(null);
     }
   };
 
-  const deleteTodo = async (todoPublicKey: web3.PublicKey) => {
-    if (!program || !publicKey) return;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const handleUpdate = async (e: any) => {
+    e.preventDefault();
+
+    if (
+      !program ||
+      !publicKey ||
+      !editingTodo ||
+      !todoPDA ||
+      editIndex === null
+    ) {
+      console.log("Missing required state");
+      return;
+    }
+    setIsLoading(true);
 
     try {
-      setLoadingState({
-        isToogleLoading: false,
-        isDeleteLoading: true,
-        publickey: todoPublicKey,
-      });
       const txHash = await program.methods
-        .deleteTodo()
+        .updateTodo(
+          todoIdBN,
+          new BN(editIndex),
+          editingTodo.description,
+          editingTodo.endDate
+        )
         .accounts({
-          todo: todoPublicKey,
-          authority: publicKey,
+          signer: publicKey,
+          todoList: todoPDA,
+          systemProgram: web3.SystemProgram.programId,
         })
         .rpc();
 
@@ -249,18 +234,65 @@ export default function Home() {
           signature: txHash,
           ...latestBlockhash,
         },
-        "finalized"
+        "confirmed"
       );
-
       fetchTodos();
     } catch (err) {
-      console.error("Error deleting todo:", err);
+      console.error("Error adding todo:", err);
     } finally {
-      setLoadingState({
-        isToogleLoading: false,
-        isDeleteLoading: false,
-        publickey: null,
-      });
+      setIsAddLoading(false);
+      setEditingTodo(null);
+      setEditIndex(null);
+    }
+  };
+
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const addTodo = async (e: any) => {
+    e.preventDefault();
+
+    if (
+      !program ||
+      !publicKey ||
+      !title.trim() ||
+      !description.trim() ||
+      !endDate.trim() ||
+      !todoPDA
+    ) {
+      console.log("Missing required state");
+      return;
+    }
+    setIsLoading(true);
+
+    try {
+      setIsAddLoading(true);
+
+      const txHash = await program.methods
+        .addTodo(
+          todoIdBN,
+          title,
+          description,
+          new BN(new Date(endDate).getTime())
+        )
+        .accounts({
+          signer: publicKey,
+          todoList: todoPDA,
+          systemProgram: web3.SystemProgram.programId,
+        })
+        .rpc();
+
+      const latestBlockhash = await connection.getLatestBlockhash();
+      await connection.confirmTransaction(
+        {
+          signature: txHash,
+          ...latestBlockhash,
+        },
+        "confirmed"
+      );
+      fetchTodos();
+    } catch (err) {
+      console.error("Error adding todo:", err);
+    } finally {
+      setIsAddLoading(false);
     }
   };
 
@@ -273,7 +305,6 @@ export default function Home() {
         AnchorProvider.defaultOptions()
       );
       const program = new Program(IDL, programID, provider);
-      console.log("Available instructions:", Object.keys(program.methods));
       setProgram(program);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -309,10 +340,170 @@ export default function Home() {
         <WalletMultiButtonDynamic />
       </div>
       <div className="w-full max-w-2xl">
-        <main className="container mx-auto p-4">
-          <h1 className="text-3xl font-bold mb-6">Todo App</h1>
-          {/* <AddTodoForm />
-          <TodoList initialTodos={todos} /> */}
+        <main className="container mx-auto p-4 w-full">
+          {!isTodoInitialized ? (
+            <div className="flex items-center justify-center mb-6 w-full">
+              <Button onClick={() => initialize_todo_list()}>Initialize</Button>
+            </div>
+          ) : (
+            <>
+              <h1 className="flex justify-center text-3xl font-bold mb-6">
+                Todo App
+              </h1>
+              <form onSubmit={addTodo} className="space-y-4 mb-8">
+                <Input
+                  type="text"
+                  placeholder="Title"
+                  value={title}
+                  onChange={(e) => setTitle(e.target.value)}
+                  required
+                />
+                <Textarea
+                  placeholder="Description"
+                  value={description}
+                  onChange={(e) => setDescription(e.target.value)}
+                  required
+                />
+                <Input
+                  type="date"
+                  value={endDate}
+                  onChange={(e) => setEndDate(e.target.value)}
+                  required
+                />
+                <Button type="submit">Add Todo</Button>
+              </form>
+              {todos.todos.length !== 0 && (
+                <div className="flex justify-end">
+                  <Button
+                    variant="ghost"
+                    size="icon"
+                    onClick={() => {
+                      handleDelete();
+                    }}
+                  >
+                    <Trash2 className="h-4 w-4" color="red" />
+                  </Button>
+                </div>
+              )}
+              <div className="bg-white rounded-lg shadow-md p-4 max-h-96 overflow-y-auto">
+                {todos.todos.map((todo, index) => (
+                  <div
+                    className="flex items-center justify-between p-4 border-b"
+                    key={index}
+                  >
+                    <div>
+                      <div className="flex items-center space-x-4">
+                        <h3 className="font-semibold">{todo.title}</h3>
+                        <p>
+                          {todo.isCompleted ? (
+                            <span className="text-green-500 text-xs">
+                              Completed
+                            </span>
+                          ) : (
+                            <span className="text-red-500 text-xs">
+                              Pending
+                            </span>
+                          )}
+                        </p>
+                      </div>
+                      <p className="text-sm text-gray-600">
+                        {todo.description}
+                      </p>
+                      <p className="text-xs text-gray-500">
+                        Due:{" "}
+                        {dateFormatter
+                          .format(new Date(todo.endDate.toNumber()))
+                          .replace(/\//g, "/")}
+                      </p>
+                    </div>
+                    <div className="flex items-center ">
+                      {!todo.isCompleted && (
+                        <>
+                          <Button
+                            variant="ghost"
+                            size="icon"
+                            onClick={() => handleFinished(index)}
+                          >
+                            <ClipboardCheck className="h-4 w-4" color="green" />
+                          </Button>
+                        </>
+                      )}
+                      <Button
+                        variant="ghost"
+                        size="icon"
+                        onClick={() => {
+                          setEditingTodo(todo);
+                          setEditIndex(index);
+                        }}
+                      >
+                        <Edit className="h-4 w-4" color="brown" />
+                      </Button>
+                    </div>
+                  </div>
+                ))}
+                {editingTodo && (
+                  <Dialog
+                    open={!!editingTodo}
+                    onOpenChange={() => {
+                      setEditingTodo(null);
+                      setEditIndex(null);
+                    }}
+                  >
+                    <DialogContent>
+                      <DialogHeader>
+                        <DialogTitle>Edit Todo</DialogTitle>
+                      </DialogHeader>
+                      <form onSubmit={handleUpdate}>
+                        <div className="space-y-4">
+                          <Textarea
+                            placeholder="Description"
+                            value={editingTodo.description}
+                            onChange={(e) =>
+                              setEditingTodo({
+                                ...editingTodo,
+                                description: e.target.value,
+                              })
+                            }
+                            required
+                          />
+                          <Input
+                            type="date"
+                            value={
+                              new Date(editingTodo.endDate.toNumber())
+                                .toISOString()
+                                .split("T")[0]
+                            }
+                            onChange={(e) =>
+                              setEditingTodo({
+                                ...editingTodo,
+                                endDate: new BN(
+                                  new Date(e.target.value).getTime()
+                                ),
+                              })
+                            }
+                            required
+                          />
+                        </div>
+                        <DialogFooter className="mt-4">
+                          <Button
+                            type="button"
+                            variant="outline"
+                            onClick={() => {
+                              setEditingTodo(null);
+                              setEditIndex(null);
+                            }}
+                          >
+                            Cancel
+                          </Button>
+                          <Button type="submit">Save</Button>
+                        </DialogFooter>
+                      </form>
+                    </DialogContent>
+                  </Dialog>
+                )}
+              </div>
+            </>
+          )}
         </main>
       </div>
     </div>
